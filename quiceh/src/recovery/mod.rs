@@ -656,7 +656,9 @@ impl Recovery {
             packet_size
         };
 
-        self.pacer.send(sent_bytes, now);
+        if self.pacer.enabled() {
+            self.pacer.send(sent_bytes, now);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
