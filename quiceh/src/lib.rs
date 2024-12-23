@@ -3806,7 +3806,13 @@ impl<F: BufFactory> Connection<F> {
 
         // Limit output packet size to respect the sender and receiver's
         // maximum UDP payload size limit.
-        let mut left = cmp::min(out.len(), self.max_send_udp_payload_size());
+        let mut left = if self.use_hidden_crypt_copy_for_zc {
+            // We reserve a bit more memory for scatter encryption alignment on blocksize -- only
+            // works for AES for this impl.
+            cmp::min(out.len(), self.max_send_udp_payload_size() + 16) - 16
+        } else {
+            cmp::min(out.len(), self.max_send_udp_payload_size())
+        };
 
         let send_pid = match (from, to) {
             (Some(f), Some(t)) => self
@@ -5194,8 +5200,10 @@ impl<F: BufFactory> Connection<F> {
                 } else {
                     0_usize
                 };
-                // TODO explain the alignment logic.
-                let (b, b_ctrl) = b.split_at(payload_offset + stream_len)?;
+                // ctrl cleartext is written inside the destination buffer, aligned
+                // on a multiple of the AES blocksize.
+                let align = stream_len % 16;
+                let (b, b_ctrl) = b.split_at(payload_offset + stream_len + align)?;
                 (b, b_ctrl, stream_len)
             } else {
                 // In V1 we would start with the ctrl.
