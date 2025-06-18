@@ -3,8 +3,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "http_utils.h"
-#include "quic_helper.h"
+#include "common/http_utils.h"
+#include "common/quic_helper.h"
 
 
 int main(int argc, char* argv[])

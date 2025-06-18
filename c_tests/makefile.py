@@ -19,13 +19,16 @@ def on_build(config: powermake.Config):
 
     cargo_build(config)
 
-    files = powermake.get_files("*.c")
+    files = powermake.get_files("**/*.c")
     objects = powermake.compile_files(config, files)
-    powermake.link_files(config, objects)
+
+    powermake.link_files(config, powermake.filter_files(objects, "**/server.c.o"), executable_name="client")
+    powermake.link_files(config, powermake.filter_files(objects, "**/client.c.o"), executable_name="server")
+
 
 def on_test(config: powermake.Config, args):
     os.environ["RUST_BACKTRACE"] = "1"
     os.environ["RUST_LOGS"] = "trace"
     powermake.default_on_test(config, args)
 
-powermake.run("test1", build_callback=on_build, test_callback=on_test)
+powermake.run("client_server", build_callback=on_build, test_callback=on_test)
