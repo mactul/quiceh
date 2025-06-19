@@ -15,7 +15,7 @@ int main(int argc, char* argv[])
     int64_t stream_id;
     quiceh_h3_event* ev;
 
-    QuicHandler* handler = NULL;
+    QuicConnHandler* handler = NULL;
 
     if(argc > 1)
     {
@@ -32,6 +32,8 @@ int main(int argc, char* argv[])
     {
         goto FREE;
     }
+
+    printf("connected\n");
 
     if(quic_send_request(handler, "GET", url.secured ? "https" : "http", url.host, url.req, "quiceh") < 0)
     {
@@ -66,12 +68,14 @@ int main(int argc, char* argv[])
                     }
                 }
                 break;
+            case QUICEH_H3_EVENT_FINISHED:
+                quic_close(handler);
         }
         quiceh_h3_event_free(ev);
     }
 
     return_code = 0;
 FREE:
-    quic_free(&handler);
+    quic_conn_free(&handler);
     return return_code;
 }

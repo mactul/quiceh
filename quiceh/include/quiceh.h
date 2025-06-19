@@ -486,10 +486,10 @@ quiceh_stream_iter *quiceh_conn_writable(const quiceh_conn *conn);
 size_t quiceh_conn_max_send_udp_payload_size(const quiceh_conn *conn);
 
 // Returns the amount of time until the next timeout event, in nanoseconds.
-uint64_t quiceh_conn_timeout_as_nanos(const quiceh_conn *conn);
+int64_t quiceh_conn_timeout_as_nanos(const quiceh_conn *conn);
 
 // Returns the amount of time until the next timeout event, in milliseconds.
-uint64_t quiceh_conn_timeout_as_millis(const quiceh_conn *conn);
+int64_t quiceh_conn_timeout_as_millis(const quiceh_conn *conn);
 
 // Processes a timeout event.
 void quiceh_conn_on_timeout(quiceh_conn *conn);

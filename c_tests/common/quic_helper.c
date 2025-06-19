@@ -17,18 +17,22 @@
 
 #define HTTP_REQ_STREAM_ID 4
 
-struct _quic_handler {
+struct _quic_base_handler {
     int fd;
-
+    bool independent;
     socklen_t local_len;
     socklen_t peer_len;
     struct sockaddr local;
     struct sockaddr peer;
 
     quiceh_config* config;
-    quiceh_conn* conn;
-    quiceh_app_recv_buff_map* app_buffers;
     quiceh_h3_config* h3_config;
+    quiceh_app_recv_buff_map* app_buffers;
+};
+
+struct _quic_conn_handler {
+    QuicBaseHandler* handler;
+    quiceh_conn* conn;
     quiceh_h3_conn* h3_conn;
 };
 
@@ -97,26 +101,101 @@ static int build_socket(const char* local_hostname, const char* str_local_port, 
         return -1;
     }
 
-    fd = bind_connect_addr(fd, &hints, local_hostname, str_local_port, local, local_len, bind);
-    if(fd == -1)
+    if(local_hostname != NULL || str_local_port != NULL)
     {
-        return -1;
+        fd = bind_connect_addr(fd, &hints, local_hostname, str_local_port, local, local_len, bind);
+        if(fd == -1)
+        {
+            return -1;
+        }
     }
 
-    fd = bind_connect_addr(fd, &hints, peer_hostname, str_peer_port, peer, peer_len, connect);
+    if(peer_hostname != NULL || str_peer_port != NULL)
+    {
+        fd = bind_connect_addr(fd, &hints, peer_hostname, str_peer_port, peer, peer_len, connect);
+    }
 
     return fd;
 }
 
+static void print_id(const uint8_t* id, size_t len)
+{
+    printf("id: ");
+    for(size_t i = 0; i < len; i++)
+    {
+        printf("%02x", id[i]);
+    }
+    putchar('\n');
+}
 
-static bool process_ingress(QuicHandler* handler)
+static bool create_conn(QuicConnHandler* handler, const uint8_t* buffer, size_t buf_len)
+{
+    uint32_t version;
+    uint8_t scid[256];
+    size_t scid_len = sizeof(scid);
+    uint8_t dcid[256];
+    size_t dcid_len = sizeof(dcid);
+    uint8_t token[256];
+    size_t token_len = sizeof(token);
+    uint8_t out[MAX_DATAGRAM_SIZE];
+    ssize_t out_len;
+
+    printf("%d\n", quiceh_header_info(buffer, buf_len, QUICEH_MAX_CONN_ID_LEN, &version, NULL, scid, &scid_len, dcid, &dcid_len, token, &token_len));
+
+    printf("%s\n", inet_ntop(AF_INET, &((const struct sockaddr_in *)&(handler->handler->peer))->sin_addr, out, handler->handler->peer_len));
+    printf("token len: %lu\n", token_len);
+
+    if(!quiceh_version_is_supported(version))
+    {
+        out_len = quiceh_negotiate_version(scid, scid_len, dcid, dcid_len, out, sizeof(out));
+
+        errno = 0;
+        if(sendto(handler->handler->fd, out, out_len, 0, &handler->handler->peer, handler->handler->peer_len) != out_len)
+        {
+            perror("sendto didn't send enough bytes");
+            return false;
+        }
+        return false;
+    }
+
+    if(token_len == 0)
+    {
+        uint8_t new_scid[QUICEH_MAX_CONN_ID_LEN];
+        printf("stateless retry\n");
+
+
+        random_set_unsecure_seed(random_standard_seed());
+        random_unsecure_bytes(new_scid, sizeof(new_scid));
+
+        print_id(new_scid, sizeof(new_scid));
+
+        out_len = quiceh_retry(scid, scid_len, dcid, dcid_len, new_scid, sizeof(new_scid), dcid, dcid_len, version, out, sizeof(out));
+
+        errno = 0;
+        if(sendto(handler->handler->fd, out, out_len, 0, &handler->handler->peer, handler->handler->peer_len) != out_len)
+        {
+            perror("sendto didn't send enough bytes");
+            return false;
+        }
+        return false;
+    }
+
+    print_id(dcid, dcid_len);
+
+    handler->conn = quiceh_accept(dcid, dcid_len, token, token_len, &handler->handler->local, handler->handler->local_len, &handler->handler->peer, handler->handler->peer_len, handler->handler->config);
+
+    return true;
+}
+
+
+static bool process_ingress(QuicConnHandler* handler)
 {
     ssize_t n = 0;
     uint8_t buffer[65535] = {0};
 
-    struct pollfd pollfd[] = {{.fd = handler->fd, .events = POLLIN}};
+    struct pollfd pollfd[] = {{.fd = handler->handler->fd, .events = POLLIN}};
 
-    int nfds = poll(pollfd, sizeof(pollfd) / sizeof(struct pollfd), quiceh_conn_timeout_as_millis(handler->conn));
+    int nfds = poll(pollfd, sizeof(pollfd) / sizeof(struct pollfd), handler->conn ? quiceh_conn_timeout_as_millis(handler->conn): -1);
     if(nfds < 0)
     {
         perror("poll");
@@ -131,11 +210,18 @@ static bool process_ingress(QuicHandler* handler)
     }
 
     errno = 0;
-    while(nfds > 0 && (n = recv(handler->fd, buffer, sizeof(buffer), 0)) > 0)
+    while(nfds > 0 && (n = recvfrom(handler->handler->fd, buffer, sizeof(buffer), 0, &handler->handler->peer, &handler->handler->peer_len)) > 0)
     {
-        quiceh_recv_info recv_info = {.from = &handler->peer, .from_len = handler->peer_len, .to = &handler->local, .to_len = handler->local_len};
+        if(handler->conn == NULL)
+        {
+            if(!create_conn(handler, buffer, n))
+            {
+                break;
+            }
+        }
+        quiceh_recv_info recv_info = {.from = &handler->handler->peer, .from_len = handler->handler->peer_len, .to = &handler->handler->local, .to_len = handler->handler->local_len};
 
-        if(quiceh_conn_recv(handler->conn, (uint8_t*)buffer, n, handler->app_buffers, &recv_info) < 0)
+        if(quiceh_conn_recv(handler->conn, (uint8_t*)buffer, n, handler->handler->app_buffers, &recv_info) < 0)
         {
             break;
         }
@@ -149,15 +235,20 @@ static bool process_ingress(QuicHandler* handler)
     return true;
 }
 
-static bool process_egress(QuicHandler* handler)
+static bool process_egress(QuicConnHandler* handler)
 {
     ssize_t n = 0;
     uint8_t out[MAX_DATAGRAM_SIZE] = {0};
     quiceh_send_info out_info;
 
+    if(handler->conn == NULL)
+    {
+        return true;
+    }
+
     while((n = quiceh_conn_send(handler->conn, (uint8_t*)out, sizeof(out), &out_info)) > 0)
     {
-        if(send(handler->fd, out, n, 0) != n)
+        if(sendto(handler->handler->fd, out, n, 0, &handler->handler->peer, handler->handler->peer_len) != n)
         {
             perror("send didn't send enough bytes");
             return false;
@@ -172,23 +263,147 @@ static bool process_egress(QuicHandler* handler)
 }
 
 
-QuicHandler* quic_connect(const char* hostname, const char* port, uint32_t protocol_version, bool verify_peer)
+QuicConnHandler* quic_connect(const char* hostname, const char* port, uint32_t protocol_version, bool verify_peer)
 {
     ssize_t n;
     uint8_t out[MAX_DATAGRAM_SIZE] = {0};
 
     uint8_t scid[QUICEH_MAX_CONN_ID_LEN];
 
-    QuicHandler* handler = NULL;
+    QuicConnHandler* handler = NULL;
 
-    handler = calloc(1, sizeof(QuicHandler));
+    handler = calloc(1, sizeof(QuicConnHandler));
+    if(handler == NULL)
+    {
+        goto FREE;
+    }
+    handler->handler = calloc(1, sizeof(QuicBaseHandler));
+    if(handler->handler == NULL)
+    {
+        goto FREE;
+    }
+    handler->handler->fd = -1;
+    handler->handler->peer_len = sizeof(struct sockaddr);
+
+    handler->handler->fd = build_socket("127.0.0.1", "0", hostname, port, &handler->handler->local, &handler->handler->local_len, &handler->handler->peer, &handler->handler->peer_len);
+    if(handler->handler->fd < 0)
+    {
+        goto FREE;
+    }
+
+    if(!set_blocking_mode(handler->handler->fd, false))
+    {
+        goto FREE;
+    }
+
+    handler->handler->config = quiceh_config_new(protocol_version);
+    if(handler->handler->config == NULL)
+    {
+        goto FREE;
+    }
+
+    handler->handler->h3_config = quiceh_h3_config_new();
+    if(handler->handler->h3_config == NULL)
+    {
+        goto FREE;
+    }
+
+    quiceh_config_verify_peer(handler->handler->config, verify_peer);
+
+    const char* protos[] = {
+        "h3",
+        NULL
+    };
+
+    quiceh_config_set_application_protos(handler->handler->config, protos);
+
+    quiceh_config_set_max_idle_timeout(handler->handler->config, 5000);
+    quiceh_config_set_max_recv_udp_payload_size(handler->handler->config, MAX_DATAGRAM_SIZE);
+    quiceh_config_set_max_send_udp_payload_size(handler->handler->config, MAX_DATAGRAM_SIZE);
+    quiceh_config_set_initial_max_data(handler->handler->config, 10000000);
+    quiceh_config_set_initial_max_stream_data_bidi_local(handler->handler->config, 1000000);
+    quiceh_config_set_initial_max_stream_data_bidi_remote(handler->handler->config, 1000000);
+    quiceh_config_set_initial_max_stream_data_uni(handler->handler->config, 1000000);
+    quiceh_config_set_initial_max_streams_bidi(handler->handler->config, 100);
+    quiceh_config_set_initial_max_streams_uni(handler->handler->config, 100);
+    quiceh_config_set_disable_active_migration(handler->handler->config, true);
+    quiceh_config_set_active_connection_id_limit(handler->handler->config, 2);
+    quiceh_config_set_max_connection_window(handler->handler->config, 25165824);
+    quiceh_config_set_max_stream_window(handler->handler->config, 16777216);
+    quiceh_config_set_cc_algorithm_name(handler->handler->config, "cubic");
+
+    random_set_unsecure_seed(random_standard_seed());
+    random_unsecure_bytes(scid, sizeof(scid));
+
+    handler->conn = quiceh_connect(hostname, (uint8_t*)scid, sizeof(scid), &handler->handler->local, handler->handler->local_len, &handler->handler->peer, handler->handler->peer_len, handler->handler->config);
+    if(handler->conn == NULL)
+    {
+        goto FREE;
+    }
+
+    handler->handler->app_buffers = quiceh_app_recv_buf_map_default();
+    if(handler->handler->app_buffers == NULL)
+    {
+        goto FREE;
+    }
+
+    quiceh_send_info out_info;
+
+    n = quiceh_conn_send(handler->conn, (uint8_t*)out, sizeof(out), &out_info);
+    if(n < 0)
+    {
+        goto FREE;
+    }
+    if(send(handler->handler->fd, out, n, 0) != n)
+    {
+        perror("send didn't send enough bytes");
+        goto FREE;
+    }
+
+    while(!quiceh_conn_is_closed(handler->conn))
+    {
+        if(!process_ingress(handler))
+        {
+            goto FREE;
+        }
+
+        if(quiceh_conn_is_established(handler->conn))
+        {
+            // connected
+            handler->h3_conn = quiceh_h3_conn_new_with_transport(handler->conn, handler->handler->h3_config);
+            if(handler->h3_conn == NULL)
+            {
+                goto FREE;
+            }
+            return handler;
+        }
+
+        if(!process_egress(handler))
+        {
+            goto FREE;
+        }
+    }
+
+FREE:
+    quic_conn_free(&handler);
+    return NULL;
+}
+
+
+QuicBaseHandler* quic_server_init(const char* hostname, const char* port, uint32_t protocol_version, const char* cert_path, const char* key_path)
+{
+    QuicBaseHandler* handler = NULL;
+
+    handler = calloc(1, sizeof(QuicBaseHandler));
     if(handler == NULL)
     {
         goto FREE;
     }
     handler->fd = -1;
+    handler->independent = true;
+    handler->peer_len = sizeof(struct sockaddr);
 
-    handler->fd = build_socket("0.0.0.0", "0", hostname, port, &handler->local, &handler->local_len, &handler->peer, &handler->peer_len);
+    handler->fd = build_socket(hostname, port, NULL, NULL, &handler->local, &handler->local_len, NULL, NULL);
     if(handler->fd < 0)
     {
         goto FREE;
@@ -205,7 +420,22 @@ QuicHandler* quic_connect(const char* hostname, const char* port, uint32_t proto
         goto FREE;
     }
 
-    quiceh_config_verify_peer(handler->config, verify_peer);
+    handler->h3_config = quiceh_h3_config_new();
+    if(handler->h3_config == NULL)
+    {
+        goto FREE;
+    }
+
+    if(quiceh_config_load_cert_chain_from_pem_file(handler->config, cert_path))
+    {
+        fprintf(stderr, "Cannot load cert file\n");
+        goto FREE;
+    }
+    if(quiceh_config_load_priv_key_from_pem_file(handler->config, key_path))
+    {
+        fprintf(stderr, "Cannot load key file\n");
+        goto FREE;
+    }
 
     const char* protos[] = {
         "h3",
@@ -224,19 +454,7 @@ QuicHandler* quic_connect(const char* hostname, const char* port, uint32_t proto
     quiceh_config_set_initial_max_streams_bidi(handler->config, 100);
     quiceh_config_set_initial_max_streams_uni(handler->config, 100);
     quiceh_config_set_disable_active_migration(handler->config, true);
-    quiceh_config_set_active_connection_id_limit(handler->config, 2);
-    quiceh_config_set_max_connection_window(handler->config, 25165824);
-    quiceh_config_set_max_stream_window(handler->config, 16777216);
-    quiceh_config_set_cc_algorithm_name(handler->config, "cubic");
-
-    random_set_unsecure_seed(random_standard_seed());
-    random_unsecure_bytes(scid, sizeof(scid));
-
-    handler->conn = quiceh_connect(hostname, (uint8_t*)scid, sizeof(scid), &handler->local, handler->local_len, &handler->peer, handler->peer_len, handler->config);
-    if(handler->conn == NULL)
-    {
-        goto FREE;
-    }
+    quiceh_config_enable_early_data(handler->config);
 
     handler->app_buffers = quiceh_app_recv_buf_map_default();
     if(handler->app_buffers == NULL)
@@ -244,55 +462,50 @@ QuicHandler* quic_connect(const char* hostname, const char* port, uint32_t proto
         goto FREE;
     }
 
-    quiceh_send_info out_info;
-
-    n = quiceh_conn_send(handler->conn, (uint8_t*)out, sizeof(out), &out_info);
-    if(n < 0)
-    {
-        goto FREE;
-    }
-    if(send(handler->fd, out, n, 0) != n)
-    {
-        perror("send didn't send enough bytes");
-        goto FREE;
-    }
-
-    while(!quiceh_conn_is_closed(handler->conn))
-    {
-        if(!process_ingress(handler))
-        {
-            goto FREE;
-        }
-
-        if(quiceh_conn_is_established(handler->conn))
-        {
-            // connected
-            handler->h3_config = quiceh_h3_config_new();
-            if(handler->h3_config == NULL)
-            {
-                goto FREE;
-            }
-            handler->h3_conn = quiceh_h3_conn_new_with_transport(handler->conn, handler->h3_config);
-            if(handler->h3_conn == NULL)
-            {
-                goto FREE;
-            }
-            return handler;
-        }
-
-        if(!process_egress(handler))
-        {
-            goto FREE;
-        }
-    }
+    return handler;
 
 FREE:
-    quic_free(&handler);
+    quic_base_free(&handler);
     return NULL;
 }
 
+QuicConnHandler* quic_accept(QuicBaseHandler* server_handler)
+{
+    QuicConnHandler* handler = calloc(1, sizeof(QuicConnHandler));
+    if(handler == NULL)
+    {
+        return NULL;
+    }
+    handler->handler = server_handler;
 
-int64_t quic_send_request(QuicHandler* handler, const char* method, const char* scheme, const char* hostname, const char* path, const char* user_agent)
+    while(handler->conn == NULL || (!quiceh_conn_is_established(handler->conn) && !quiceh_conn_is_in_early_data(handler->conn)))
+    {
+        process_ingress(handler);
+        process_egress(handler);
+    }
+    handler->h3_conn = quiceh_h3_conn_new_with_transport(handler->conn, server_handler->h3_config);
+
+    return handler;
+}
+
+void quic_reply(QuicConnHandler* handler, uint64_t stream_id, uint8_t* content, size_t content_length)
+{
+    char content_length_str[256];
+    snprintf(content_length_str, 256, "%d", content_length);
+
+    quiceh_h3_header headers[] = {
+        {.name = (uint8_t*)":status", .name_len = sizeof(":status")-1, .value = (uint8_t*)"200", .value_len = sizeof("200")-1},
+        {.name = (uint8_t*)"server", .name_len = sizeof("server")-1, .value = (uint8_t*)"quiceh", .value_len = sizeof("quiceh")-1},
+        {.name = (uint8_t*)"content-length", .name_len = sizeof("content-length")-1, .value = (uint8_t*)content_length_str, .value_len = strlen(content_length_str)},
+    };
+
+    quiceh_conn_stream_shutdown(handler->conn, stream_id, QUICEH_SHUTDOWN_READ, 0);
+    quiceh_h3_send_response(handler->h3_conn, handler->conn, stream_id, headers, sizeof(headers) / sizeof(quiceh_h3_header), false);
+    quiceh_h3_send_body(handler->h3_conn, handler->conn, stream_id, content, content_length, true);
+}
+
+
+int64_t quic_send_request(QuicConnHandler* handler, const char* method, const char* scheme, const char* hostname, const char* path, const char* user_agent)
 {
     quiceh_h3_header headers[] = {
         {.name = (uint8_t*)":method", .name_len = sizeof(":method")-1, .value = (uint8_t*)method, .value_len = strlen(method)},
@@ -306,7 +519,7 @@ int64_t quic_send_request(QuicHandler* handler, const char* method, const char* 
 }
 
 
-int64_t quic_poll(QuicHandler* handler, quiceh_h3_event** ev)
+int64_t quic_poll(QuicConnHandler* handler, quiceh_h3_event** ev)
 {
     int64_t stream_id = QUICEH_H3_ERR_DONE;
     do
@@ -317,13 +530,7 @@ int64_t quic_poll(QuicHandler* handler, quiceh_h3_event** ev)
         }
         else
         {
-            stream_id = quiceh_h3_conn_poll_v3(handler->h3_conn, handler->conn, handler->app_buffers, ev);
-        }
-
-        if(stream_id >= 0 && quiceh_h3_event_type(*ev) == QUICEH_H3_EVENT_FINISHED)
-        {
-            quiceh_conn_close(handler->conn, true, 0x0, (uint8_t*)"kthxbye", 7);
-            return QUICEH_H3_ERR_DONE;
+            stream_id = quiceh_h3_conn_poll_v3(handler->h3_conn, handler->conn, handler->handler->app_buffers, ev);
         }
 
         if(stream_id >= 0 || stream_id != QUICEH_H3_ERR_DONE)
@@ -340,28 +547,51 @@ int64_t quic_poll(QuicHandler* handler, quiceh_h3_event** ev)
     return QUICEH_H3_ERR_DONE;
 }
 
-uint32_t quic_conn_version(QuicHandler* handler)
+uint32_t quic_conn_version(QuicConnHandler* handler)
 {
     return quiceh_conn_version(handler->conn);
 }
 
 
-ssize_t quic_recv_body_v1(QuicHandler* handler, uint64_t stream_id, uint8_t *out, size_t out_len)
+ssize_t quic_recv_body_v1(QuicConnHandler* handler, uint64_t stream_id, uint8_t *out, size_t out_len)
 {
     return quiceh_h3_recv_body(handler->h3_conn, handler->conn, stream_id, out, out_len);
 }
 
-ssize_t quic_recv_body_v3(QuicHandler* handler, uint64_t stream_id, const uint8_t **out)
+ssize_t quic_recv_body_v3(QuicConnHandler* handler, uint64_t stream_id, const uint8_t **out)
 {
-    return quiceh_h3_recv_body_v3(handler->h3_conn, handler->conn, stream_id, handler->app_buffers, out, NULL);
+    return quiceh_h3_recv_body_v3(handler->h3_conn, handler->conn, stream_id, handler->handler->app_buffers, out, NULL);
 }
 
-int quic_body_consumed(QuicHandler* handler, uint64_t stream_id, size_t consumed)
+int quic_body_consumed(QuicConnHandler* handler, uint64_t stream_id, size_t consumed)
 {
-    return quiceh_h3_body_consumed(handler->h3_conn, handler->conn, stream_id, consumed, handler->app_buffers);
+    return quiceh_h3_body_consumed(handler->h3_conn, handler->conn, stream_id, consumed, handler->handler->app_buffers);
 }
 
-void quic_free(QuicHandler** handler)
+void quic_close(QuicConnHandler* handler)
+{
+    quiceh_conn_close(handler->conn, true, 0, (uint8_t*)"kthxbye", 7);
+}
+
+void quic_conn_free(QuicConnHandler** handler)
+{
+    if(*handler == NULL)
+    {
+        return;
+    }
+
+    if((*handler)->handler != NULL && !(*handler)->handler->independent)
+    {
+        quic_base_free(&(*handler)->handler);
+    }
+
+    quiceh_conn_free((*handler)->conn);
+    quiceh_h3_conn_free((*handler)->h3_conn);
+    free(*handler);
+    *handler = NULL;
+}
+
+void quic_base_free(QuicBaseHandler** handler)
 {
     if(*handler == NULL)
     {
@@ -369,10 +599,8 @@ void quic_free(QuicHandler** handler)
     }
 
     quiceh_app_recv_buf_map_free((*handler)->app_buffers);
-    quiceh_conn_free((*handler)->conn);
     quiceh_config_free((*handler)->config);
     quiceh_h3_config_free((*handler)->h3_config);
-    quiceh_h3_conn_free((*handler)->h3_conn);
     if((*handler)->fd >= 0)
     {
         close((*handler)->fd);
