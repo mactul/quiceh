@@ -28,7 +28,7 @@ int main(int argc, char* argv[])
     }
 
 
-    handler = quic_connect(url.host, url.port, QUICEH_PROTOCOL_VERSION_V1, false);
+    handler = quic_connect(url.host, url.port, QUICEH_PROTOCOL_VERSION, false);
     if(handler == NULL)
     {
         goto FREE;
@@ -65,7 +65,7 @@ int main(int argc, char* argv[])
                     ssize_t read = quic_recv_body_v3(handler, stream_id, &data);
                     if(read > 0)
                     {
-                        write(STDOUT_FILENO, data, read);
+                        //write(STDOUT_FILENO, data, read);
                         total_received += read;
                         quic_body_consumed(handler, stream_id, read);
                     }

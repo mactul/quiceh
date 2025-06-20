@@ -12,6 +12,9 @@ def cargo_build(config: powermake.Config):
 def on_build(config: powermake.Config):
     config.add_flags("-Wall", "-Wextra")
 
+    if not config.debug:
+        config.add_flags("-flto")
+
     config.add_shared_libs("crypto", "ssl", "quiceh")
     config.add_includedirs("../quiceh/include/")
 

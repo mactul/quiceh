@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <netdb.h>
@@ -12,6 +13,9 @@
 
 #include "random.h"
 #include "quic_helper.h"
+
+#define MAX_MSG_SENDMMSG 50
+#define MAX_MSG_RECVMMSG 50
 
 #define MAX_DATAGRAM_SIZE 1350
 
@@ -190,8 +194,10 @@ static bool create_conn(QuicConnHandler* handler, const uint8_t* buffer, size_t 
 
 static bool process_ingress(QuicConnHandler* handler)
 {
-    ssize_t n = 0;
-    uint8_t buffer[65535] = {0};
+    int n = 0;
+    uint8_t buffers[MAX_MSG_RECVMMSG][2048];
+    struct iovec iovecs[MAX_MSG_RECVMMSG];
+    struct mmsghdr msgs[MAX_MSG_RECVMMSG];
 
     struct pollfd pollfd[] = {{.fd = handler->handler->fd, .events = POLLIN}};
 
@@ -209,21 +215,37 @@ static bool process_ingress(QuicConnHandler* handler)
         return true;
     }
 
+    for (int i = 0; i < MAX_MSG_RECVMMSG; i++) {
+        iovecs[i].iov_base          = buffers[i];
+        iovecs[i].iov_len           = 2048;
+        msgs[i].msg_hdr.msg_iov     = &iovecs[i];
+        msgs[i].msg_hdr.msg_iovlen  = 1;
+        msgs[i].msg_hdr.msg_name    = &handler->handler->peer;    // BAD !!! msgs are not guaranteed to be from the same peer
+        msgs[i].msg_hdr.msg_namelen = handler->handler->peer_len;
+        msgs[i].msg_hdr.msg_control = NULL;
+        msgs[i].msg_hdr.msg_controllen = 0;
+        msgs[i].msg_hdr.msg_flags = 0;
+    }
+
+
     errno = 0;
-    while(nfds > 0 && (n = recvfrom(handler->handler->fd, buffer, sizeof(buffer), 0, &handler->handler->peer, &handler->handler->peer_len)) > 0)
+    while(nfds > 0 && (n = recvmmsg(handler->handler->fd, msgs, MAX_MSG_RECVMMSG, 0, NULL)) > 0)
     {
-        if(handler->conn == NULL)
+        for(int i = 0; i < n; i++)
         {
-            if(!create_conn(handler, buffer, n))
+            if(handler->conn == NULL)
+            {
+                if(!create_conn(handler, buffers[i], msgs[i].msg_len))
+                {
+                    break;
+                }
+            }
+            quiceh_recv_info recv_info = {.from = &handler->handler->peer, .from_len = handler->handler->peer_len, .to = &handler->handler->local, .to_len = handler->handler->local_len};
+
+            if(quiceh_conn_recv(handler->conn, (uint8_t*)buffers[i], msgs[i].msg_len, handler->handler->app_buffers, &recv_info) < 0)
             {
                 break;
             }
-        }
-        quiceh_recv_info recv_info = {.from = &handler->handler->peer, .from_len = handler->handler->peer_len, .to = &handler->handler->local, .to_len = handler->handler->local_len};
-
-        if(quiceh_conn_recv(handler->conn, (uint8_t*)buffer, n, handler->handler->app_buffers, &recv_info) < 0)
-        {
-            break;
         }
     }
     if(nfds > 0 && n < 0 && errno != 0 && errno != EWOULDBLOCK)
@@ -237,8 +259,13 @@ static bool process_ingress(QuicConnHandler* handler)
 
 static bool process_egress(QuicConnHandler* handler)
 {
-    ssize_t n = 0;
-    uint8_t out[MAX_DATAGRAM_SIZE] = {0};
+    int nb_msgs = 0;
+    ssize_t n;
+    uint8_t out[MAX_MSG_SENDMMSG][MAX_DATAGRAM_SIZE];
+    struct iovec iovecs[MAX_MSG_SENDMMSG];
+    struct mmsghdr msgs[MAX_MSG_SENDMMSG];
+    struct mmsghdr* msgs_left = msgs;
+
     quiceh_send_info out_info;
 
     if(handler->conn == NULL)
@@ -246,14 +273,32 @@ static bool process_egress(QuicConnHandler* handler)
         return true;
     }
 
-    while((n = quiceh_conn_send(handler->conn, (uint8_t*)out, sizeof(out), &out_info)) > 0)
+    while(nb_msgs < MAX_MSG_SENDMMSG && (n = quiceh_conn_send(handler->conn, out[nb_msgs], MAX_DATAGRAM_SIZE, &out_info)) > 0)
     {
-        if(sendto(handler->handler->fd, out, n, 0, &handler->handler->peer, handler->handler->peer_len) != n)
+        iovecs[nb_msgs].iov_base          = out[nb_msgs];
+        iovecs[nb_msgs].iov_len           = n;
+        msgs[nb_msgs].msg_hdr.msg_iov     = &iovecs[nb_msgs];
+        msgs[nb_msgs].msg_hdr.msg_iovlen  = 1;
+        msgs[nb_msgs].msg_hdr.msg_name    = &handler->handler->peer;    // BAD !!! msgs are not guaranteed to be from the same peer
+        msgs[nb_msgs].msg_hdr.msg_namelen = handler->handler->peer_len;
+        msgs[nb_msgs].msg_hdr.msg_control = NULL;
+        msgs[nb_msgs].msg_hdr.msg_controllen = 0;
+        msgs[nb_msgs].msg_hdr.msg_flags = 0;
+
+        nb_msgs++;
+    }
+
+    while(nb_msgs > 0)
+    {
+        errno = 0;
+        int sended = sendmmsg(handler->handler->fd, msgs_left, nb_msgs, 0);
+        if(sended > 0)
         {
-            perror("send didn't send enough bytes");
-            return false;
+            msgs_left += sended;
+            nb_msgs -= sended;
         }
     }
+
     if(n < 0 && n != QUICEH_ERR_DONE)
     {
         quiceh_conn_close(handler->conn, false, 0x1, (uint8_t*)"fail", 4);

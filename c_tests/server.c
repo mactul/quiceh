@@ -47,7 +47,7 @@ int main(int argc, char* argv[])
     printf("data loaded\n");
 
 
-    server_handler = quic_server_init(url.host, url.port, QUICEH_PROTOCOL_VERSION_V1, "./cert.crt", "./cert.key");
+    server_handler = quic_server_init(url.host, url.port, QUICEH_PROTOCOL_VERSION, "./cert.crt", "./cert.key");
     if(server_handler == NULL)
     {
         goto FREE;
