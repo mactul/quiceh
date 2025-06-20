@@ -14,6 +14,7 @@ int main(int argc, char* argv[])
 
     int64_t stream_id;
     quiceh_h3_event* ev;
+    size_t total_received = 0;
 
     QuicConnHandler* handler = NULL;
 
@@ -27,7 +28,7 @@ int main(int argc, char* argv[])
     }
 
 
-    handler = quic_connect(url.host, url.port, QUICEH_PROTOCOL_VERSION, false);
+    handler = quic_connect(url.host, url.port, QUICEH_PROTOCOL_VERSION_V1, false);
     if(handler == NULL)
     {
         goto FREE;
@@ -54,7 +55,8 @@ int main(int argc, char* argv[])
                     uint8_t data[BUFSIZ];
                     while((read = quic_recv_body_v1(handler, stream_id, data, sizeof(data))) > 0)
                     {
-                        write(STDOUT_FILENO, data, read);
+                        // write(STDOUT_FILENO, data, read);
+                        total_received += read;
                     }
                 }
                 else
@@ -64,6 +66,7 @@ int main(int argc, char* argv[])
                     if(read > 0)
                     {
                         write(STDOUT_FILENO, data, read);
+                        total_received += read;
                         quic_body_consumed(handler, stream_id, read);
                     }
                 }
@@ -73,6 +76,8 @@ int main(int argc, char* argv[])
         }
         quiceh_h3_event_free(ev);
     }
+
+    printf("\nTotal received: %lu\n", total_received);
 
     return_code = 0;
 FREE:

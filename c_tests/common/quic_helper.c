@@ -142,7 +142,7 @@ static bool create_conn(QuicConnHandler* handler, const uint8_t* buffer, size_t 
 
     printf("%d\n", quiceh_header_info(buffer, buf_len, QUICEH_MAX_CONN_ID_LEN, &version, NULL, scid, &scid_len, dcid, &dcid_len, token, &token_len));
 
-    printf("%s\n", inet_ntop(AF_INET, &((const struct sockaddr_in *)&(handler->handler->peer))->sin_addr, out, handler->handler->peer_len));
+    printf("%s\n", inet_ntop(AF_INET, &((const struct sockaddr_in *)&(handler->handler->peer))->sin_addr, (char*)out, handler->handler->peer_len));
     printf("token len: %lu\n", token_len);
 
     if(!quiceh_version_is_supported(version))
@@ -491,7 +491,7 @@ QuicConnHandler* quic_accept(QuicBaseHandler* server_handler)
 void quic_reply(QuicConnHandler* handler, uint64_t stream_id, uint8_t* content, size_t content_length)
 {
     char content_length_str[256];
-    snprintf(content_length_str, 256, "%d", content_length);
+    snprintf(content_length_str, 256, "%lu", content_length);
 
     quiceh_h3_header headers[] = {
         {.name = (uint8_t*)":status", .name_len = sizeof(":status")-1, .value = (uint8_t*)"200", .value_len = sizeof("200")-1},
@@ -501,7 +501,22 @@ void quic_reply(QuicConnHandler* handler, uint64_t stream_id, uint8_t* content, 
 
     quiceh_conn_stream_shutdown(handler->conn, stream_id, QUICEH_SHUTDOWN_READ, 0);
     quiceh_h3_send_response(handler->h3_conn, handler->conn, stream_id, headers, sizeof(headers) / sizeof(quiceh_h3_header), false);
-    quiceh_h3_send_body(handler->h3_conn, handler->conn, stream_id, content, content_length, true);
+    while(content_length > 0)
+    {
+        ssize_t sended = quiceh_h3_send_body(handler->h3_conn, handler->conn, stream_id, content, content_length, true);
+        if(sended > 0)
+        {
+            if((size_t)sended > content_length)
+            {
+                sended = content_length;
+            }
+            content += sended;
+            content_length -= sended;
+        }
+        process_egress(handler);
+        process_ingress(handler);
+    }
+    process_egress(handler);
 }
 
 

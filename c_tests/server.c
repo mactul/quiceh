@@ -6,6 +6,8 @@
 #include "common/http_utils.h"
 #include "common/quic_helper.h"
 
+uint8_t data[1000*1000*1000];
+
 
 static int callback(uint8_t *name, size_t name_len, uint8_t *value, size_t value_len, void *argp)
 {
@@ -37,6 +39,13 @@ int main(int argc, char* argv[])
         }
     }
 
+    for(size_t i = 0; i < sizeof(data); i++)
+    {
+        data[i] = 'A' + i % 26;
+    }
+
+    printf("data loaded\n");
+
 
     server_handler = quic_server_init(url.host, url.port, QUICEH_PROTOCOL_VERSION_V1, "./cert.crt", "./cert.key");
     if(server_handler == NULL)
@@ -57,12 +66,15 @@ int main(int argc, char* argv[])
             case QUICEH_H3_EVENT_HEADERS:
                 printf("headers received\n");
                 quiceh_h3_event_for_each_header(ev, callback, NULL);
-                quic_reply(client_handler, stream_id, "hello world", sizeof("hello world")-1);
+                quic_reply(client_handler, stream_id, data, sizeof(data));
+                break;
+            default:
+                printf("%d\n", quiceh_h3_event_type(ev));
                 break;
         }
         quiceh_h3_event_free(ev);
     }
-    printf("stream id: %d\n", stream_id);
+    printf("stream id: %ld\n", stream_id);
 
     return_code = 0;
 FREE:
