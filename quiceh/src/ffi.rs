@@ -228,7 +228,7 @@ pub extern "C" fn quiceh_config_enable_early_data(config: &mut Config) {
 #[no_mangle]
 /// Corresponds to the `Config::set_application_protos_wire_format` Rust
 /// function.
-pub extern fn quiceh_config_set_application_protos_wire_format(
+pub extern "C" fn quiceh_config_set_application_protos_wire_format(
     config: &mut Config, protos: *const u8, protos_len: size_t,
 ) -> c_int {
     let protos = unsafe { slice::from_raw_parts(protos, protos_len) };
@@ -251,7 +251,7 @@ pub extern fn quiceh_config_set_application_protos_wire_format(
 ///     NULL
 /// };
 /// ```
-pub extern fn quiceh_config_set_application_protos(
+pub extern "C" fn quiceh_config_set_application_protos(
     config: &mut Config, protos: *const *const c_char,
 ) -> c_int {
     unsafe {
@@ -285,7 +285,7 @@ pub extern fn quiceh_config_set_application_protos(
 }
 
 #[no_mangle]
-pub extern fn quiceh_config_set_max_amplification_factor(
+pub extern "C" fn quiceh_config_set_max_amplification_factor(
     config: &mut Config, v: usize,
 ) {
     config.set_max_amplification_factor(v);
@@ -467,7 +467,7 @@ pub extern "C" fn quiceh_config_set_ticket_key(
 }
 
 #[no_mangle]
-pub extern fn quiceh_config_free(config: *mut Config) {
+pub extern "C" fn quiceh_config_free(config: *mut Config) {
     if config.is_null() {
         return;
     }
@@ -602,12 +602,12 @@ pub extern "C" fn quiceh_connect(
 }
 
 #[no_mangle]
-pub extern fn quiceh_conn_version(conn: &Connection) -> u32 {
+pub extern "C" fn quiceh_conn_version(conn: &Connection) -> u32 {
     conn.version()
 }
 
 #[no_mangle]
-pub extern fn quiceh_negotiate_version(
+pub extern "C" fn quiceh_negotiate_version(
     scid: *const u8, scid_len: size_t, dcid: *const u8, dcid_len: size_t,
     out: *mut u8, out_len: size_t,
 ) -> ssize_t {
@@ -788,7 +788,7 @@ pub extern "C" fn quiceh_conn_set_session(
 }
 
 #[no_mangle]
-pub extern fn quiceh_app_recv_buf_map_new(
+pub extern "C" fn quiceh_app_recv_buf_map_new(
     recycled_capacity: usize, max_streams_bidi: u64,
     max_streams_uni_remote: u64,
 ) -> *mut AppRecvBufMap {
@@ -800,12 +800,12 @@ pub extern fn quiceh_app_recv_buf_map_new(
 }
 
 #[no_mangle]
-pub extern fn quiceh_app_recv_buf_map_default() -> *mut AppRecvBufMap {
+pub extern "C" fn quiceh_app_recv_buf_map_default() -> *mut AppRecvBufMap {
     Box::into_raw(Box::new(AppRecvBufMap::default()))
 }
 
 #[no_mangle]
-pub extern fn quiceh_app_recv_buf_map_free(app_buffers: *mut AppRecvBufMap) {
+pub extern "C" fn quiceh_app_recv_buf_map_free(app_buffers: *mut AppRecvBufMap) {
     if app_buffers.is_null() {
         return;
     }
@@ -831,7 +831,7 @@ impl<'a> From<&RecvInfo<'a>> for crate::RecvInfo {
 
 
 #[no_mangle]
-pub extern fn quiceh_conn_recv(
+pub extern "C" fn quiceh_conn_recv(
     conn: &mut Connection, buf: *mut u8, buf_len: size_t,
     app_buffers: &mut AppRecvBufMap, info: &RecvInfo,
 ) -> ssize_t {
@@ -942,7 +942,7 @@ pub extern "C" fn quiceh_conn_stream_recv(
 
 
 #[no_mangle]
-pub extern fn quiceh_conn_peek<'a>(
+pub extern "C" fn quiceh_conn_peek<'a>(
     conn: &mut Connection, stream_id: u64, app_buffers: &'a mut AppRecvBufMap,
     out: *mut *const u8, fin: &mut bool, out_error_code: &mut u64,
 ) -> ssize_t {
@@ -970,7 +970,7 @@ pub extern fn quiceh_conn_peek<'a>(
 }
 
 #[no_mangle]
-pub extern fn quiceh_conn_stream_consumed(
+pub extern "C" fn quiceh_conn_stream_consumed(
     conn: &mut Connection, stream_id: u64, consumed: size_t,
     app_buffers: &mut AppRecvBufMap,
 ) -> c_int {
@@ -982,7 +982,7 @@ pub extern fn quiceh_conn_stream_consumed(
 }
 
 #[no_mangle]
-pub extern fn quiceh_conn_stream_send(
+pub extern "C" fn quiceh_conn_stream_send(
     conn: &mut Connection, stream_id: u64, buf: *const u8, buf_len: size_t,
     fin: bool, out_error_code: &mut u64,
 ) -> ssize_t {
@@ -1111,7 +1111,7 @@ pub extern "C" fn quiceh_conn_close(
 }
 
 #[no_mangle]
-pub extern fn quiceh_conn_timeout_as_nanos(conn: &Connection) -> i64 {
+pub extern "C" fn quiceh_conn_timeout_as_nanos(conn: &Connection) -> i64 {
     match conn.timeout() {
         Some(timeout) => timeout.as_nanos() as i64,
 
@@ -1120,7 +1120,7 @@ pub extern fn quiceh_conn_timeout_as_nanos(conn: &Connection) -> i64 {
 }
 
 #[no_mangle]
-pub extern fn quiceh_conn_timeout_as_millis(conn: &Connection) -> i64 {
+pub extern "C" fn quiceh_conn_timeout_as_millis(conn: &Connection) -> i64 {
     match conn.timeout() {
         Some(timeout) => timeout.as_millis() as i64,
 
@@ -1162,7 +1162,7 @@ impl<'a> Iterator for ConnectionIdIter<'a> {
 }
 
 #[no_mangle]
-pub extern "C" fn quiceh_conn_source_ids(conn: &Connection) -> *mut ConnectionIdIter {
+pub extern "C" fn quiceh_conn_source_ids(conn: &Connection) -> *mut ConnectionIdIter<'_> {
     let vec = conn.source_ids().cloned().collect();
     Box::into_raw(Box::new(ConnectionIdIter {
         cids: vec,
@@ -1185,7 +1185,7 @@ pub extern "C" fn quiceh_connection_id_iter_next(
 }
 
 #[no_mangle]
-pub extern fn quiceh_connection_id_iter_free(iter: *mut ConnectionIdIter) {
+pub extern "C" fn quiceh_connection_id_iter_free(iter: *mut ConnectionIdIter) {
     if iter.is_null() {
         return;
     }
@@ -1332,7 +1332,7 @@ pub extern "C" fn quiceh_stream_iter_next(
 }
 
 #[no_mangle]
-pub extern fn quiceh_stream_iter_free(iter: *mut StreamIter) {
+pub extern "C" fn quiceh_stream_iter_free(iter: *mut StreamIter) {
     if iter.is_null() {
         return;
     }
@@ -1603,7 +1603,7 @@ pub extern "C" fn quiceh_conn_send_ack_eliciting_on_path(
 }
 
 #[no_mangle]
-pub extern fn quiceh_conn_free(conn: *mut Connection) {
+pub extern "C" fn quiceh_conn_free(conn: *mut Connection) {
     if conn.is_null() {
         return;
     }
@@ -1729,7 +1729,7 @@ pub extern "C" fn quiceh_socket_addr_iter_next(
 }
 
 #[no_mangle]
-pub extern fn quiceh_socket_addr_iter_free(iter: *mut SocketAddrIter) {
+pub extern "C" fn quiceh_socket_addr_iter_free(iter: *mut SocketAddrIter) {
     if iter.is_null() {
         return;
     }
@@ -1925,7 +1925,7 @@ pub extern "C" fn quiceh_path_event_peer_migrated(
 }
 
 #[no_mangle]
-pub extern fn quiceh_path_event_free(ev: *mut PathEvent) {
+pub extern "C" fn quiceh_path_event_free(ev: *mut PathEvent) {
     if ev.is_null() {
         return;
     }
@@ -2254,7 +2254,7 @@ mod tests {
     }
 
     #[cfg(not(windows))]
-    extern {
+    extern "C" {
         fn inet_ntop(
             af: c_int, src: *const c_void, dst: *mut c_char, size: socklen_t,
         ) -> *mut c_char;

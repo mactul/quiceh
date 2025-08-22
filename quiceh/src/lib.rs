@@ -772,6 +772,7 @@ impl Error {
             Error::AppRecvBufNotFound => -22,
             Error::InvalidOffset => -23,
             Error::InvalidAPICall(_) => -24,
+            Error::TooManyChunksBuffered => -25,
         }
     }
 }
@@ -19608,6 +19609,8 @@ mod tests {
                 client_addr,
                 &mut server_config,
             )?,
+            client_app_buffers: Default::default(),
+            server_app_buffers: Default::default(),
         };
 
         assert_eq!(pipe.handshake(), Ok(()));
